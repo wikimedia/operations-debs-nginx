@@ -1,3 +1,16 @@
+nginx (0.7.65-4wmf1) lucid-wikimedia; urgency=low
+
+  * Applying fix for overly long user agents
+
+ -- Ryan Lane <rlane@wikimedia.org>  Mon, 23 Jan 2012 02:09:43 +0000
+
+nginx (0.7.65-3wmf1) lucid-wikimedia; urgency=low
+
+  * Applying patches for escaping user agents in udplog module. Patches by
+    abemusic.
+
+ -- Ryan Lane <rlane@wikimedia.org>  Thu, 21 Jan 2012 05:39:14 +0000
+
 nginx (0.7.65-2wmf1) lucid-wikimedia; urgency=low
 
   * Adding udplog module

@@ -1,7 +1,8 @@
 --- /dev/null
 +++ b/modules/nginx-udplog/LICENCE
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,25 @@
 +* Copyright (c) 2010, Valery Kholodkov
++* Copyright (c) 2011, Ryan Lane
 +* All rights reserved.
 +*
 +* Redistribution and use in source and binary forms, with or without
@@ -62,7 +63,7 @@
 +
 --- /dev/null
 +++ b/modules/nginx-udplog/README
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,37 @@
 +
 +Documentation for this module could be found under following URLs:
 +
@@ -73,6 +74,33 @@
 +  * Russian:
 +
 +    http://www.grid.net.ru/nginx/udplog.ru.html
++
++---------------------------------------------------------------------
++
++Test client usage:
++
++    usage: python test_client.py [-h] [-w W] [-l L] url
++
++    positional arguments:
++      url         URL of the nginx web server to send requests to
++
++    optional arguments:
++      -h, --help  show this help message and exit
++      -n N        Number of random user agent strings to send (default=10)
++      -w W        Seconds to wait between requests (default=0.25)
++      -l L        Length of garbage user agent strings (default=50)
++      
++
++    Note that this is mainly for testing that the User-Agent strings are
++    being properly encoded so before running this you'll need to configure
++    nginx to make use of the "access_updlog" command and add the new 
++    variable $udplog_escaped-user_agent in your "log_format".
++
++    Once configured, the access logs will then be written to the defined
++    host via UDP. To see these you can listen on the port with socat and
++    write the data to stdout:
++
++        socat UDP-LISTEN:<port> STDOUT
 --- /dev/null
 +++ b/modules/nginx-udplog/config
 @@ -0,0 +1,3 @@
@@ -81,7 +109,7 @@
 +NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_udplog_module.c"
 --- /dev/null
 +++ b/modules/nginx-udplog/ngx_http_udplog_module.c
-@@ -0,0 +1,608 @@
+@@ -0,0 +1,682 @@
 +
 +/*
 + * Copyright (C) 2010 Valery Kholodkov
@@ -169,11 +197,19 @@
 +    ngx_http_variable_value_t *v, uintptr_t data);
 +static ngx_int_t ngx_http_udplog_sequence_variable(ngx_http_request_t *r,
 +    ngx_http_variable_value_t *v, uintptr_t data);
++static ngx_int_t ngx_http_udplog_escaped_user_agent_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data);
++static ngx_int_t ngx_http_udplog_escaped_content_type_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data);
 +
 +static ngx_http_variable_t  ngx_http_udplog_variables[] = {
 +	{ ngx_string("udplog_time"), NULL, ngx_http_udplog_time_variable, 0,
 +          NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
 +	{ ngx_string("udplog_sequence"), NULL, ngx_http_udplog_sequence_variable, 0,
++          NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
++	{ ngx_string("udplog_escaped_user_agent"), NULL, ngx_http_udplog_escaped_user_agent_variable, 0,
++          NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
++	{ ngx_string("udplog_escaped_content_type"), NULL, ngx_http_udplog_escaped_content_type_variable, 0,
 +          NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
 +
 +	{ ngx_null_string, NULL, NULL, 0, 0, 0 }
@@ -280,6 +316,72 @@
 +    }
 +
 +    v->len = ngx_sprintf(v->data, "%l", sequence_number) - v->data;
++    v->valid = 1;
++    v->no_cacheable = 0;
++    v->not_found = 0;
++
++    return NGX_OK;
++}
++
++static ngx_int_t
++ngx_http_udplog_escaped_user_agent_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data)
++{
++    u_char                    *ua;
++    uintptr_t                 escape;
++    size_t                    l;  
++
++    // Check that the user agent string was processed. NULL seems
++    // to occur when the user agent string is very large (~8K)
++    if(r->headers_in.user_agent == NULL) {
++        return NGX_ERROR;
++    }
++
++    ua = r->headers_in.user_agent->value.data;
++    l = r->headers_in.user_agent->value.len;
++    escape = 2 * ngx_escape_uri(NULL, ua, l, NGX_ESCAPE_URI);
++
++    v->data = ngx_pnalloc(r->pool, l + escape);
++    if (v->data == NULL) {
++        return NGX_ERROR;
++    }   
++
++    ngx_escape_uri(v->data, ua, l, NGX_ESCAPE_URI);
++
++    v->len = l + escape;
++    v->valid = 1;
++    v->no_cacheable = 0;
++    v->not_found = 0;
++
++    return NGX_OK;
++    
++}
++
++static ngx_int_t
++ngx_http_udplog_escaped_content_type_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data)
++{
++    u_char                    *ct;
++    uintptr_t                 escape;
++    size_t                    l;  
++
++    // Check that the content type string was processed. 
++    if(r->headers_in.content_type == NULL) {
++        return NGX_ERROR;
++    }
++
++    ct = r->headers_in.content_type->value.data;
++    l = r->headers_in.content_type->value.len;
++    escape = 2 * ngx_escape_uri(NULL, ct, l, NGX_ESCAPE_URI);
++
++    v->data = ngx_pnalloc(r->pool, l + escape);
++    if (v->data == NULL) {
++        return NGX_ERROR;
++    }   
++
++    ngx_escape_uri(v->data, ct, l, NGX_ESCAPE_URI);
++
++    v->len = l + escape;
 +    v->valid = 1;
 +    v->no_cacheable = 0;
 +    v->not_found = 0;
@@ -690,3 +792,70 @@
 +
 +    return NGX_OK;
 +}
+--- /dev/null
++++ b/modules/nginx-udplog/test_client.py
+@@ -0,0 +1,64 @@
++##
++# See the README for usage
++##
++
++import argparse
++import urllib2
++import random
++import time
++
++USER_AGENTS = (
++    'Mozilla/5.0 (Windows; U; Windows NT 5.1; en-GB; rv:1.8.1.6) Gecko/20070725 Firefox/2.0.0.6',
++    'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 5.1)',
++    'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 5.1; .NET CLR 1.1.4322; .NET CLR 2.0.50727; .NET CLR 3.0.04506.30)',
++    'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; .NET CLR 1.1.4322)',
++    'Mozilla/4.0 (compatible; MSIE 5.0; Windows NT 5.1; .NET CLR 1.1.4322)',
++    'Opera/9.20 (Windows NT 6.0; U; en)',
++    'Opera/9.00 (Windows NT 5.1; U; en)',
++    'Mozilla/4.0 (compatible; MSIE 6.0; MSIE 5.5; Windows NT 5.1) Opera 7.02 [en]',
++    'Googlebot-Image/1.0 ( http://www.googlebot.com/bot.html)',
++    'msnbot-Products/1.0 (+http://search.msn.com/msnbot.htm)',
++
++    # really long user agent
++    'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 5.1; .NET CLR 1.1.4322; .NET CLR 2.0.50727; .NET CLR 3.0.04506.30)'*10,
++)
++
++def rand_ustring(n):
++    "Create n-char string of unicode"
++    return u"".join(unichr(random.randint(0x66d, 0x1000)) for i in xrange(n))
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser()
++    parser.add_argument("url", 
++                        type=str, 
++                        help="URL of the nginx web server to send requests to")
++    parser.add_argument("-n",
++                        type=int,
++                        help="Number of random user agent strings to send (default=10)",
++                        default=10)
++    parser.add_argument("-w",
++                        type=float,
++                        help="Seconds to wait between requests (default=0.25)",
++                        default=0.25)
++    parser.add_argument("-l",
++                        type=int,
++                        help="Length of garbage user agent strings (default=50)",
++                        default=50)
++    args = parser.parse_args()
++
++    # Send good user agents
++    for user_agent in USER_AGENTS:
++        req = urllib2.Request(args.url, headers={
++            "User-Agent": user_agent 
++        })
++        urllib2.urlopen(req)
++        time.sleep(args.w)
++
++    # Send random unicode user agents
++    for i in xrange(args.n):
++        garbage = rand_ustring(args.l)
++        req = urllib2.Request(args.url, headers={
++            "User-Agent": garbage.encode('utf-8')
++        })
++        urllib2.urlopen(req)
++        time.sleep(args.w)
