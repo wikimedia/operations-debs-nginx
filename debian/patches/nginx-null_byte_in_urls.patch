@@ -1,0 +1,279 @@
+Description: Upstream changes introduced in version 0.7.65-1ubuntu3
+ This patch has been created by dpkg-source during the package build.
+ Here's the last changelog entry, hopefully it gives details on why
+ those changes were made:
+ .
+ nginx (0.7.65-1ubuntu3) lucid; urgency=low
+ .
+   * Merge r3528 from upstream repository to mitigate potential
+     null byte vulnerability (LP: #783508)
+ .
+ The person named in the Author field signed this changelog entry.
+Author: Neal Poole <neal@nealpoole.com>
+Bug-Ubuntu: https://bugs.launchpad.net/bugs/783508
+Origin: svn://svn.nginx.org/nginx/ rev 3528
+
+--- nginx-0.7.65.orig/src/http/ngx_http_special_response.c
++++ nginx-0.7.65/src/http/ngx_http_special_response.c
+@@ -517,8 +517,6 @@ ngx_http_send_error_page(ngx_http_reques
+ 
+     r->err_status = overwrite;
+ 
+-    r->zero_in_uri = 0;
+-
+     if (ngx_http_complex_value(r, &err_page->value, &uri) != NGX_OK) {
+         return NGX_ERROR;
+     }
+--- nginx-0.7.65.orig/src/http/ngx_http_request.h
++++ nginx-0.7.65/src/http/ngx_http_request.h
+@@ -57,7 +57,7 @@
+ #define NGX_HTTP_PARSE_INVALID_HEADER      13
+ 
+ 
+-#define NGX_HTTP_ZERO_IN_URI               1
++/* unused                                  1 */
+ #define NGX_HTTP_SUBREQUEST_IN_MEMORY      2
+ #define NGX_HTTP_SUBREQUEST_WAITED         4
+ #define NGX_HTTP_LOG_UNSAFE                8
+@@ -428,9 +428,6 @@ struct ngx_http_request_s {
+     /* URI with "+" */
+     unsigned                          plus_in_uri:1;
+ 
+-    /* URI with "\0" or "%00" */
+-    unsigned                          zero_in_uri:1;
+-
+     unsigned                          invalid_header:1;
+ 
+     unsigned                          valid_location:1;
+--- nginx-0.7.65.orig/src/http/ngx_http_upstream.c
++++ nginx-0.7.65/src/http/ngx_http_upstream.c
+@@ -1775,10 +1775,6 @@ ngx_http_upstream_process_headers(ngx_ht
+             return NGX_DONE;
+         }
+ 
+-        if (flags & NGX_HTTP_ZERO_IN_URI) {
+-            r->zero_in_uri = 1;
+-        }
+-
+         if (r->method != NGX_HTTP_HEAD) {
+             r->method = NGX_HTTP_GET;
+         }
+--- nginx-0.7.65.orig/src/http/ngx_http_parse.c
++++ nginx-0.7.65/src/http/ngx_http_parse.c
+@@ -438,8 +438,7 @@ ngx_http_parse_request_line(ngx_http_req
+                 r->plus_in_uri = 1;
+                 break;
+             case '\0':
+-                r->zero_in_uri = 1;
+-                break;
++                return NGX_HTTP_PARSE_INVALID_REQUEST;
+             default:
+                 state = sw_check_uri;
+                 break;
+@@ -496,8 +495,7 @@ ngx_http_parse_request_line(ngx_http_req
+                 r->plus_in_uri = 1;
+                 break;
+             case '\0':
+-                r->zero_in_uri = 1;
+-                break;
++                return NGX_HTTP_PARSE_INVALID_REQUEST;
+             }
+             break;
+ 
+@@ -526,8 +524,7 @@ ngx_http_parse_request_line(ngx_http_req
+                 r->complex_uri = 1;
+                 break;
+             case '\0':
+-                r->zero_in_uri = 1;
+-                break;
++                return NGX_HTTP_PARSE_INVALID_REQUEST;
+             }
+             break;
+ 
+@@ -1202,7 +1199,7 @@ ngx_http_parse_complex_uri(ngx_http_requ
+                     ch = *p++;
+ 
+                 } else if (ch == '\0') {
+-                    r->zero_in_uri = 1;
++                    return NGX_HTTP_PARSE_INVALID_REQUEST;
+                 }
+ 
+                 state = quoted_state;
+@@ -1304,8 +1301,7 @@ ngx_http_parse_unsafe_uri(ngx_http_reque
+         }
+ 
+         if (ch == '\0') {
+-            *flags |= NGX_HTTP_ZERO_IN_URI;
+-            continue;
++            goto unsafe;
+         }
+ 
+         if (ngx_path_separator(ch) && len > 2) {
+@@ -1449,34 +1445,19 @@ ngx_http_arg(ngx_http_request_t *r, u_ch
+ void
+ ngx_http_split_args(ngx_http_request_t *r, ngx_str_t *uri, ngx_str_t *args)
+ {
+-    u_char  ch, *p, *last;
+-
+-    p = uri->data;
+-
+-    last = p + uri->len;
+-
+-    args->len = 0;
+-
+-    while (p < last) {
+-
+-        ch = *p++;
++    u_char  *p, *last;
+ 
+-        if (ch == '?') {
+-            args->len = last - p;
+-            args->data = p;
++    last = uri->data + uri->len;
+ 
+-            uri->len = p - 1 - uri->data;
++    p = ngx_strlchr(uri->data, last, '?');
+ 
+-            if (ngx_strlchr(p, last, '\0') != NULL) {
+-                r->zero_in_uri = 1;
+-            }
++    if (p) {
++        uri->len = p - uri->data;
++        p++;
++        args->len = last - p;
++        args->data = p;
+ 
+-            return;
+-        }
+-
+-        if (ch == '\0') {
+-            r->zero_in_uri = 1;
+-            continue;
+-        }
++    } else {
++        args->len = 0;
+     }
+ }
+--- nginx-0.7.65.orig/src/http/ngx_http_core_module.c
++++ nginx-0.7.65/src/http/ngx_http_core_module.c
+@@ -1288,7 +1288,7 @@ ngx_http_core_content_phase(ngx_http_req
+ 
+     /* no content handler was found */
+ 
+-    if (r->uri.data[r->uri.len - 1] == '/' && !r->zero_in_uri) {
++    if (r->uri.data[r->uri.len - 1] == '/') {
+ 
+         if (ngx_http_map_uri_to_path(r, &path, &root, 0) != NULL) {
+             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+@@ -2076,7 +2076,6 @@ ngx_http_subrequest(ngx_http_request_t *
+     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+                    "http subrequest \"%V?%V\"", uri, &sr->args);
+ 
+-    sr->zero_in_uri = (flags & NGX_HTTP_ZERO_IN_URI) != 0;
+     sr->subrequest_in_memory = (flags & NGX_HTTP_SUBREQUEST_IN_MEMORY) != 0;
+     sr->waited = (flags & NGX_HTTP_SUBREQUEST_WAITED) != 0;
+ 
+--- nginx-0.7.65.orig/src/http/modules/ngx_http_gzip_static_module.c
++++ nginx-0.7.65/src/http/modules/ngx_http_gzip_static_module.c
+@@ -89,10 +89,6 @@ ngx_http_gzip_static_handler(ngx_http_re
+         return NGX_DECLINED;
+     }
+ 
+-    if (r->zero_in_uri) {
+-        return NGX_DECLINED;
+-    }
+-
+     gzcf = ngx_http_get_module_loc_conf(r, ngx_http_gzip_static_module);
+ 
+     if (!gzcf->enable) {
+--- nginx-0.7.65.orig/src/http/modules/ngx_http_flv_module.c
++++ nginx-0.7.65/src/http/modules/ngx_http_flv_module.c
+@@ -80,10 +80,6 @@ ngx_http_flv_handler(ngx_http_request_t 
+         return NGX_DECLINED;
+     }
+ 
+-    if (r->zero_in_uri) {
+-        return NGX_DECLINED;
+-    }
+-
+     rc = ngx_http_discard_request_body(r);
+ 
+     if (rc != NGX_OK) {
+--- nginx-0.7.65.orig/src/http/modules/ngx_http_static_module.c
++++ nginx-0.7.65/src/http/modules/ngx_http_static_module.c
+@@ -66,10 +66,6 @@ ngx_http_static_handler(ngx_http_request
+         return NGX_DECLINED;
+     }
+ 
+-    if (r->zero_in_uri) {
+-        return NGX_DECLINED;
+-    }
+-
+     log = r->connection->log;
+ 
+     /*
+--- nginx-0.7.65.orig/src/http/modules/ngx_http_dav_module.c
++++ nginx-0.7.65/src/http/modules/ngx_http_dav_module.c
+@@ -146,10 +146,6 @@ ngx_http_dav_handler(ngx_http_request_t 
+     ngx_int_t                 rc;
+     ngx_http_dav_loc_conf_t  *dlcf;
+ 
+-    if (r->zero_in_uri) {
+-        return NGX_DECLINED;
+-    }
+-
+     dlcf = ngx_http_get_module_loc_conf(r, ngx_http_dav_module);
+ 
+     if (!(r->method & dlcf->methods)) {
+--- nginx-0.7.65.orig/src/http/modules/ngx_http_autoindex_module.c
++++ nginx-0.7.65/src/http/modules/ngx_http_autoindex_module.c
+@@ -160,10 +160,6 @@ ngx_http_autoindex_handler(ngx_http_requ
+         return NGX_DECLINED;
+     }
+ 
+-    if (r->zero_in_uri) {
+-        return NGX_DECLINED;
+-    }
+-
+     if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) {
+         return NGX_DECLINED;
+     }
+--- nginx-0.7.65.orig/src/http/modules/ngx_http_random_index_module.c
++++ nginx-0.7.65/src/http/modules/ngx_http_random_index_module.c
+@@ -86,10 +86,6 @@ ngx_http_random_index_handler(ngx_http_r
+         return NGX_DECLINED;
+     }
+ 
+-    if (r->zero_in_uri) {
+-        return NGX_DECLINED;
+-    }
+-
+     if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD|NGX_HTTP_POST))) {
+         return NGX_DECLINED;
+     }
+--- nginx-0.7.65.orig/src/http/modules/ngx_http_index_module.c
++++ nginx-0.7.65/src/http/modules/ngx_http_index_module.c
+@@ -116,10 +116,6 @@ ngx_http_index_handler(ngx_http_request_
+         return NGX_DECLINED;
+     }
+ 
+-    if (r->zero_in_uri) {
+-        return NGX_DECLINED;
+-    }
+-
+     ilcf = ngx_http_get_module_loc_conf(r, ngx_http_index_module);
+     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+ 
+--- nginx-0.7.65.orig/src/http/modules/perl/ngx_http_perl_module.c
++++ nginx-0.7.65/src/http/modules/perl/ngx_http_perl_module.c
+@@ -174,10 +174,6 @@ ngx_http_perl_xs_init(pTHX)
+ static ngx_int_t
+ ngx_http_perl_handler(ngx_http_request_t *r)
+ {
+-    if (r->zero_in_uri) {
+-        return NGX_HTTP_NOT_FOUND;
+-    }
+-
+     ngx_http_perl_handle_request(r);
+ 
+     return NGX_DONE;

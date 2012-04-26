@@ -23,6 +23,22 @@ nginx (0.7.65-2wmf1) lucid-wikimedia; urgency=low
 
  -- Ryan Lane <rlane@wikimedia.org>  Thu, 23 Jun 2011 20:22:09 +0000
 
+nginx (0.7.65-1ubuntu2.2) lucid-proposed; urgency=low
+
+  * debian/patches/LP-902223.patch: Patch to fix reloading
+    IPv6 addresses, patch derived from Debian. (LP: #902223)
+
+ -- Mahyuddin Susanto <udienz@ubuntu.com>  Thu, 12 Jan 2012 14:45:20 +0700
+
+nginx (0.7.65-1ubuntu2.1) lucid-security; urgency=low
+
+  * SECURITY UPDATE:
+    - debian/patches/nginx-null_byte_in_urls.patch: Merge r3528 from
+      upstream repository to mitigate potential null byte vulnerability
+      (LP: #783508)
+
+ -- Neal Poole <neal@nealpoole.com>  Fri, 17 Jun 2011 20:44:44 -0400
+
 nginx (0.7.65-1ubuntu2) lucid; urgency=low
 
   * Re-enable http_realip_module (debian/rules).

@@ -1,3 +1,5 @@
 nginx-upstream-fair.diff
 dlopen.diff
+nginx-null_byte_in_urls.patch
+LP-902223.patch
 udplog.diff
