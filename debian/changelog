@@ -1,8 +1,16 @@
+nginx (0.7.65-5wmf2) UNRELEASED; urgency=low
+
+  * udplog: provide a way for the sequence number to be shared across nginx
+    worker processes. Sequence numbering is still broken but this moves it
+    into the right direction.
+
+ -- Faidon Liambotis <faidon@wikimedia.org>  Tue, 15 May 2012 14:14:46 +0300
+
 nginx (0.7.65-5wmf1) lucid-wikimedia; urgency=low
 
   * Fix a segfault when more than 2 udplog listeners are configured.
 
- -- Faidon Liambotis <paravoid@debian.org>  Thu, 26 Apr 2012 14:35:03 -0700
+ -- Faidon Liambotis <faidon@wikimedia.org>  Thu, 26 Apr 2012 14:35:03 -0700
 
 nginx (0.7.65-4wmf1) lucid-wikimedia; urgency=low
 

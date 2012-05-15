@@ -123,6 +123,9 @@
 +#include <ngx_http.h>
 +#include <nginx.h>
 +
++static ngx_atomic_t   udplog_sequence_number = 1;
++ngx_atomic_t         *ngx_udplog_sequence_number = &udplog_sequence_number;
++
 +#if defined nginx_version && nginx_version >= 8021
 +typedef ngx_addr_t ngx_udplog_addr_t;
 +#else
@@ -191,6 +194,7 @@
 +
 +static char *ngx_http_udplog_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 +
++static ngx_int_t ngx_http_udplog_module_init(ngx_cycle_t *cycle);
 +static ngx_int_t ngx_http_udplog_init(ngx_conf_t *cf);
 +static ngx_int_t ngx_http_udplog_add_variables(ngx_conf_t *cf);
 +static ngx_int_t ngx_http_udplog_time_variable(ngx_http_request_t *r,
@@ -251,7 +255,7 @@
 +    ngx_http_udplog_commands,              /* module directives */
 +    NGX_HTTP_MODULE,                       /* module type */
 +    NULL,                                  /* init master */
-+    NULL,                                  /* init module */
++    ngx_http_udplog_module_init,           /* init module */
 +    NULL,                                  /* init process */
 +    NULL,                                  /* init thread */
 +    NULL,                                  /* exit thread */
@@ -298,13 +302,22 @@
 +    return NGX_OK;
 +}
 +
++/* FIXME: this has always been and still is BROKEN. 
++ *
++ * the variable functions are being called everytime a variable's value is
++ * fetched. That means, is the variable is twice in the logline the sequence
++ * number will be incremented by two; this also means that it will be
++ * incremented once per configured udplog target.
++ *
++ * Suffice to say that since this has never been coded properly or tested,
++ * other bugs may lurk here. Proceed with caution.
++ */
 +static ngx_int_t
 +ngx_http_udplog_sequence_variable(ngx_http_request_t *r,
 +    ngx_http_variable_value_t *v, uintptr_t data)
 +{
-+    static long int sequence_number = 0;
-+
-+    sequence_number++;
++    ngx_atomic_uint_t sequence_number;
++    sequence_number = ngx_atomic_fetch_add(ngx_udplog_sequence_number, 1);
 +
 +#if defined nginx_version && nginx_version >= 7003
 +    v->data = ngx_pnalloc(r->pool, sizeof(sequence_number));
@@ -314,7 +327,6 @@
 +    if (v->data == NULL) {
 +        return NGX_ERROR;
 +    }
-+
 +    v->len = ngx_sprintf(v->data, "%l", sequence_number) - v->data;
 +    v->valid = 1;
 +    v->no_cacheable = 0;
@@ -779,6 +791,37 @@
 +                       "unknown log format \"%V\"", &name);
 +    return NGX_CONF_ERROR;
 +
++}
++
++static ngx_int_t
++ngx_http_udplog_module_init(ngx_cycle_t *cycle)
++{
++    size_t               cl;
++    ngx_shm_t            shm;
++
++    /* initialize a shared memory segment to store the log sequence number.
++     * multiple threads and multiple worker processes will write to that, 
++     * so make sure to use atomic operations, nicely wrapped around by nginx.
++     * 
++     * (most of this code is copied/adapted from event's module init)
++     */
++
++    /* cl should be equal or bigger than cache line size */
++    cl = 128;
++
++    shm.size = cl;
++    shm.name.len = sizeof("nginx_udplog_shared_zone");
++    shm.name.data = (u_char *) "nginx_udplog_shared_zone";
++    shm.log = cycle->log;
++
++    if (ngx_shm_alloc(&shm) != NGX_OK) {
++        return NGX_ERROR;
++    }
++
++    ngx_udplog_sequence_number = (ngx_atomic_t *) shm.addr; 
++    (void) ngx_atomic_cmp_set(ngx_udplog_sequence_number, 0, 1);
++
++    return NGX_OK;
 +}
 +
 +static ngx_int_t
